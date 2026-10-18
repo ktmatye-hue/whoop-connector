@@ -296,6 +296,15 @@ PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=
 <h1 style="font-size:1.3rem">WHOOP connector</h1>{body}</body>"""
 
 
+PRIVACY = """<h2 style="font-size:1.1rem">Privacy policy</h2>
+<p>This is a personal, single-user integration. It is used only by its owner to view their own WHOOP data in their own tools.</p>
+<p><b>What it reads:</b> WHOOP cycles (calories burned and strain) and workouts (sport, duration, calories and strain), using the read:cycles, read:workout and offline scopes.</p>
+<p><b>What it stores:</b> only the OAuth access and refresh tokens needed to keep the connection working. WHOOP data is fetched on request and is not stored, sold or shared with anyone.</p>
+<p><b>Where data goes:</b> only to the owner's own Claude account, through a private connector URL.</p>
+<p><b>Removing access:</b> revoke the app in your WHOOP account settings at any time. Its stored tokens then stop working.</p>
+<p>Questions: contact the owner of this deployment.</p>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "whoop-connector"
 
@@ -324,6 +333,8 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/healthz":
             return self.send(200, "ok", "text/plain")
+        if u.path == "/privacy":
+            return self.page(200, PRIVACY)
         if u.path == "/":
             connected = bool(store.get("whoop:tokens"))
             status = "<p><b>Connected to WHOOP.</b></p>" if connected else "<p>Not connected to WHOOP yet.</p>"
