@@ -36,6 +36,8 @@ API = "https://api.prod.whoop.com/developer"
 SCOPES = "offline read:cycles read:workout"
 REDIRECT_URI = PUBLIC_URL + "/callback"
 MCP_PATH = "/mcp/" + CONNECTOR_KEY
+# WHOOP's firewall rejects Python's default User-Agent (Cloudflare error 1010).
+USER_AGENT = "whoop-connector/1.0 (+" + PUBLIC_URL + ")"
 KJ_PER_KCAL = 4.184
 # A WHOOP cycle starts when you fall asleep. Shifting the start by six hours
 # labels a cycle that began at 11:30pm with the day you actually lived.
@@ -80,7 +82,7 @@ class NotConnected(Exception):
 
 def post_form(url, fields):
     body = urllib.parse.urlencode(fields).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
 
@@ -124,7 +126,7 @@ def access_token(force_refresh=False):
 def whoop_get(path, params):
     url = API + path + "?" + urllib.parse.urlencode(params)
     for attempt in (0, 1):
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + access_token(force_refresh=attempt == 1)})
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + access_token(force_refresh=attempt == 1), "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.loads(r.read())
