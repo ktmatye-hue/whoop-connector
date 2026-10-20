@@ -33,7 +33,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "")
 AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 API = "https://api.prod.whoop.com/developer"
-SCOPES = "offline read:cycles read:workout"
+SCOPES = "offline read:cycles read:workout read:recovery read:sleep"
 REDIRECT_URI = PUBLIC_URL + "/callback"
 MCP_PATH = "/mcp/" + CONNECTOR_KEY
 # WHOOP's firewall rejects Python's default User-Agent (Cloudflare error 1010).
@@ -225,6 +225,57 @@ def tool_workouts(args):
     return {"start_date": s, "end_date": e, "workouts": out}
 
 
+class MissingScope(Exception):
+    pass
+
+
+def tool_daily_recovery(args):
+    s, e, qs, qe = window(args)
+    # Recovery and sleep records point at a cycle; label them with that cycle's day.
+    cycle_day = {c["id"]: local_day(c, DAY_SHIFT) for c in whoop_collection("/v2/cycle", qs, qe)}
+    try:
+        recoveries = whoop_collection("/v2/recovery", qs, qe)
+        sleeps = whoop_collection("/v2/activity/sleep", qs, qe)
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403):
+            raise MissingScope()
+        raise
+    days = {}
+
+    def day(d):
+        return days.setdefault(d, {"date": d, "recovery_score": None, "hrv_ms": None, "resting_hr": None,
+                                   "calibrating": False, "sleep_hours": None, "sleep_needed_hours": None,
+                                   "sleep_performance": None, "sleep_efficiency": None})
+
+    for rec in recoveries:
+        d = cycle_day.get(rec.get("cycle_id"))
+        sc = rec.get("score") or {}
+        if not d or not (s <= d <= e) or rec.get("score_state") != "SCORED":
+            continue
+        row = day(d)
+        row["recovery_score"] = sc.get("recovery_score")
+        row["hrv_ms"] = round(sc["hrv_rmssd_milli"], 1) if sc.get("hrv_rmssd_milli") is not None else None
+        row["resting_hr"] = sc.get("resting_heart_rate")
+        row["calibrating"] = bool(sc.get("user_calibrating"))
+    for sl in sleeps:
+        if sl.get("nap") or sl.get("score_state") != "SCORED":
+            continue
+        d = cycle_day.get(sl.get("cycle_id"))
+        if not d or not (s <= d <= e):
+            continue
+        sc = sl.get("score") or {}
+        st = sc.get("stage_summary") or {}
+        need = sc.get("sleep_needed") or {}
+        asleep = (st.get("total_in_bed_time_milli") or 0) - (st.get("total_awake_time_milli") or 0) - (st.get("total_no_data_time_milli") or 0)
+        needed = sum(need.get(k) or 0 for k in ("baseline_milli", "need_from_sleep_debt_milli", "need_from_recent_strain_milli", "need_from_recent_nap_milli"))
+        row = day(d)
+        row["sleep_hours"] = round(asleep / 3.6e6, 1) if asleep > 0 else None
+        row["sleep_needed_hours"] = round(needed / 3.6e6, 1) if needed > 0 else None
+        row["sleep_performance"] = sc.get("sleep_performance_percentage")
+        row["sleep_efficiency"] = round(sc["sleep_efficiency_percentage"]) if sc.get("sleep_efficiency_percentage") is not None else None
+    return {"start_date": s, "end_date": e, "days": [days[k] for k in sorted(days)]}
+
+
 DATE_ARGS = {
     "type": "object",
     "properties": {
@@ -242,6 +293,10 @@ TOOLS = {
     "get_workouts": {
         "fn": tool_workouts,
         "description": "WHOOP workouts per day: sport, minutes, kcal and strain. Up to 93 days.",
+    },
+    "get_daily_recovery": {
+        "fn": tool_daily_recovery,
+        "description": "WHOOP recovery and sleep per day: recovery score %, HRV (ms), resting heart rate, hours slept, hours of sleep needed, sleep performance % and efficiency %. Labelled by the same day as get_daily_energy. Up to 93 days.",
     },
 }
 
@@ -282,6 +337,9 @@ def rpc(msg):
         except NotConnected:
             text = "WHOOP is not connected. Open " + PUBLIC_URL + "/ and sign in to WHOOP again."
             return ok({"content": [{"type": "text", "text": text}], "isError": True})
+        except MissingScope:
+            text = "WHOOP hasn't allowed recovery and sleep yet. Open " + PUBLIC_URL + "/login?key=<your key> and sign in to WHOOP again."
+            return ok({"content": [{"type": "text", "text": text}], "isError": True})
         except ValueError as e:
             return ok({"content": [{"type": "text", "text": "Bad date: " + str(e)}], "isError": True})
         except urllib.error.HTTPError as e:
@@ -300,7 +358,7 @@ PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=
 
 PRIVACY = """<h2 style="font-size:1.1rem">Privacy policy</h2>
 <p>This is a personal, single-user integration. It is used only by its owner to view their own WHOOP data in their own tools.</p>
-<p><b>What it reads:</b> WHOOP cycles (calories burned and strain) and workouts (sport, duration, calories and strain), using the read:cycles, read:workout and offline scopes.</p>
+<p><b>What it reads:</b> WHOOP cycles (calories burned and strain), workouts (sport, duration, calories and strain), recovery (recovery score, HRV, resting heart rate) and sleep (hours, sleep need, performance and efficiency), using the read:cycles, read:workout, read:recovery, read:sleep and offline scopes.</p>
 <p><b>What it stores:</b> only the OAuth access and refresh tokens needed to keep the connection working. WHOOP data is fetched on request and is not stored, sold or shared with anyone.</p>
 <p><b>Where data goes:</b> only to the owner's own Claude account, through a private connector URL.</p>
 <p><b>Removing access:</b> revoke the app in your WHOOP account settings at any time. Its stored tokens then stop working.</p>
